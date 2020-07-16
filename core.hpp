@@ -15,19 +15,8 @@
 #include <elf.h>
 #include <map>
 
-#define LOGERR(fmt, arg...) fprintf(stderr, "%s %s %d: " fmt, __FILE__, __FUNCTION__, __LINE__, ##arg);
-#define LOGINFO(fmt, arg...) fprintf(stdout, "%s %s %d: " fmt, __FILE__, __FUNCTION__, __LINE__, ##arg);
-
-
-// get text segment from process memory
-#define GTEXTPROC(ptr,sz,vec) \
-    for (size_t i = 0; i < vec.size(); i++) { \
-        if (std::get<2>(vec[i]) & (1<<1)) { \
-            ptr = std::get<0>(vec[i]); \
-            sz = std::get<1>(vec[i]); \
-            break; \
-        } \
-    } \
+#define LOGERR(fmt, arg...) ;//fprintf(stderr, "%s [%s] %d: " fmt, __FILE__, __FUNCTION__, __LINE__, ##arg);
+#define LOGINFO(fmt, arg...) fprintf(stdout, "%s [%s] %d: " fmt, __FILE__, __FUNCTION__, __LINE__, ##arg);
 
 #define GEHDRPROC(ptr,vec) \
     for (size_t i = 0; i < vec.size(); i++) { \
@@ -44,13 +33,38 @@
         if (std::get<3>(vec[i]) == 0 && std::get<1>(vec[i]) >= sizeof(Elf64_Ehdr)) { \
             elfhdr = (Elf64_Ehdr*)std::get<0>(vec[i]);  \
             if (elfhdr->e_phoff + elfhdr->e_phnum * elfhdr->e_phentsize <= std::get<1>(vec[i])) { \
-                ptr = (Elf64_Phdr*) (std::get<0>(tp) + elfhdr->e_phoff); \
+                ptr = (Elf64_Phdr*) (std::get<0>(vec[i]) + elfhdr->e_phoff); \
                 sz = elfhdr->e_phnum; \
             } \
             break; \
         }   \
     }   \
 }\
+
+// get text segment from process memory
+#define GTEXTPROC(ptr,sz,vec) \
+{ \
+    Elf64_Phdr* phdr = NULL; \
+    size_t phNum = 0; \
+    size_t tmpSz = 0; \
+    GPHDRPROC(phdr, phNum, vec); \
+    if (NULL != phdr && phNum > 0) { \
+        for (size_t i = 0; i < phNum; i++) { \
+            if (phdr->p_type == PT_LOAD && phdr->p_flags & PF_X) { \
+                tmpSz = (size_t)phdr->p_memsz; \
+                break; \
+            } \
+            phdr++; \
+        }\
+        for (size_t i = 0; i < vec.size(); i++) { \
+            if (std::get<2>(vec[i]) & (1<<1)) { \
+                ptr = std::get<0>(vec[i]); \
+                sz = tmpSz < std::get<1>(vec[i]) ? tmpSz : std::get<1>(vec[i]); \
+                break; \
+            } \
+        } \
+    }\
+} \
 
 // get ELF header from elf file
 #define GEHDRFILE(ptr,mem,sz) \
@@ -67,9 +81,34 @@
         num = elfhdr->e_phnum; \
     }\
 }\
-// get text segment from elf file
-//#define GTEXTFILE(ptr,datlen,mem,sz) \
 
+#define GSHDRFILE(ptr,num,mem,sz) \
+{ \
+    Elf64_Ehdr* elfhdr = NULL; \
+    GEHDRFILE(elfhdr,mem,sz);\
+    if (elfhdr != NULL && elfhdr->e_shnum > 0 &&  elfhdr->e_shoff && elfhdr->e_shoff + elfhdr->e_shentsize*elfhdr->e_shnum <= sz) { \
+        ptr = (Elf64_Shdr*) (mem + elfhdr->e_shoff); \
+        num = elfhdr->e_shnum; \
+    } \
+} \
+// get text segment from elf file
+#define GTEXTFILE(ptr,len,mem,sz) \
+{ \
+    Elf64_Phdr* phdr = NULL; \
+    size_t num = 0; \
+    GPHDRFILE(phdr, num, mem, sz); \
+    if (phdr != NULL && num > 0) { \
+        for (size_t i = 0; i < num; i++) { \
+            if (phdr->p_type == PT_LOAD && phdr->p_flags & PF_X) { \
+                if (phdr->p_offset+phdr->p_filesz <= sz) { \
+                    ptr = mem + phdr->p_offset; \
+                    len = phdr->p_filesz; \
+                } \
+            } \
+            phdr++; \
+        } \
+    } \
+} \
 /*
  * These below parts need to be loaded
  * 1. process LOAD segment  | process elf header
@@ -91,6 +130,7 @@ int getElfFromFile (const std::string& path,
     Elf64_Ehdr* ehdr;
     Elf64_Phdr* phdr;
     Elf64_Shdr* shdr = NULL;
+    (void)shdr;
     fd = open(path.c_str(), O_RDONLY);
     if (fd <= 0) {
         LOGERR("Fail to open %s\n", path.c_str());
@@ -114,6 +154,16 @@ int getElfFromFile (const std::string& path,
     ehdr = (Elf64_Ehdr*) mp;
     if ((size_t)sz < ehdr->e_phnum * ehdr->e_phentsize + ehdr->e_phoff) {
         LOGERR("(size_t)sz < ehdr->e_phnum * ehdr->e_phentsize + ehdr->e_phoff\n");
+        munmap(mp, sz);
+        return -1;
+    }
+
+    if (ehdr->e_ident[EI_MAG0] != ELFMAG0
+            || ehdr->e_ident[EI_MAG1] != ELFMAG1
+            || ehdr->e_ident[EI_MAG2] != ELFMAG2
+            || ehdr->e_ident[EI_MAG3] != ELFMAG3
+            || ehdr->e_ident[EI_CLASS] != ELFCLASS64) {
+        LOGERR("%s is not 64 bit elf file\n", path.c_str());
         munmap(mp, sz);
         return -1;
     }
@@ -235,7 +285,7 @@ int getProcEnviron (pid_t pid,
     return 0;
 }
 
-int getProcCmdline(pid_t pid,
+int getProcExcName(pid_t pid,
                 std::string& progName)
 {
     std::string path;
@@ -260,6 +310,9 @@ int getProcCmdline(pid_t pid,
 
     close(fd);
     progName.assign(buf);
+    if (progName.size() && progName.find("/") != std::string::npos && progName[progName.size()-1] != '/') {
+        progName = progName.substr(progName.find_last_of("/") + 1);
+    }
 
     return 0;
 }

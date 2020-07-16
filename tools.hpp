@@ -10,6 +10,9 @@
 #include <tuple>
 #include <algorithm>
 #include <functional>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 class Defer
 {
@@ -37,7 +40,7 @@ private:
     std::vector<std::function<void(void)>> dctors;
 };
 
-static int findStr(const char* src, const char* ptn, int lenSrc = 0, int sPos = 0) {
+int findStr(const char* src, const char* ptn, int lenSrc = 0, int sPos = 0) {
     int pos = -1;
     lenSrc = lenSrc == (unsigned int) 0 ? strlen(src) : lenSrc;
     int lenPtn = strlen(ptn);
@@ -55,7 +58,7 @@ static int findStr(const char* src, const char* ptn, int lenSrc = 0, int sPos = 
     return pos;
 }
 
-static std::vector<std::string> Split(const std::string& s, const std::string& c, bool skipEmptyPart = true, int maxCnt = -1) {
+std::vector<std::string> Split(const std::string& s, const std::string& c, bool skipEmptyPart = true, int maxCnt = -1) {
     std::vector<std::string> v;
     std::string::size_type pos1, pos2;
     pos2 = s.find(c);
@@ -120,4 +123,20 @@ inline void Trim(std::string& s) {
     Rtrim(s);
 }
 
+int isSymlink(const char *filename, bool& smblk)
+{
+    struct stat p_statbuf;
+
+    if (lstat(filename, &p_statbuf) < 0) {
+        return 1;
+    }
+
+    if (S_ISLNK(p_statbuf.st_mode) == 1) {
+        smblk = true;
+    } else {
+        smblk = false;
+    }
+
+    return 0;
+}
 #endif // TOOLS_HPP
